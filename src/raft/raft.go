@@ -27,7 +27,6 @@ import (
 	"6.824/labrpc"
 )
 
-
 //
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -41,33 +40,30 @@ import (
 //
 
 const (
-	ELECTION_CHECK_TIME = 5		//check whether the timeout occurs every 5ms
-	APPEND_CHECK_TIME = 2
+	ELECTION_CHECK_TIME = 5 //check whether the timeout occurs every 5ms
+	APPEND_CHECK_TIME   = 2
 )
 
 type RaftState int
 
 const (
-	Follower 	RaftState = 1
-	Candicate	RaftState = 2
-	Leader		RaftState = 3	
+	Follower  RaftState = 1
+	Candicate RaftState = 2
+	Leader    RaftState = 3
 )
 
-
-type LogEntry struct{
-	Term  		int
-	Index 		int
-	Command		interface{}
+type LogEntry struct {
+	Term    int
+	Index   int
+	Command interface{}
 }
-
-
 
 //
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
-	cv 		  *sync.Cond 				// the cv for sync producer and consumer
+	cv        *sync.Cond          // the cv for sync producer and consumer
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
@@ -77,27 +73,27 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
-	myState   		RaftState			//Server state
-	currentTerm		int					//my term (be persistent)
-	voteFor	 		int					//vote for x (be persistent)
-	logs	  		[]LogEntry			//log entries (be persistent)
-	expiredElectionTime		time.Time	//if now() > expiredElectionTime,it should start a election
+	myState             RaftState  //Server state
+	currentTerm         int        //my term (be persistent)
+	voteFor             int        //vote for x (be persistent)
+	logs                []LogEntry //log entries (be persistent)
+	expiredElectionTime time.Time  //if now() > expiredElectionTime,it should start a election
 
-	poll			int					//received vote count
+	poll int //received vote count
 
-	commitIndex		int					//index of highest log entry known to be commited
+	commitIndex int //index of highest log entry known to be commited
 	/*only for leader*/
-	nextIndex		[]int				//for each server,index of the next log entry to send to that sever
-										//initialized to leader last log index + 1		
+	nextIndex []int //for each server,index of the next log entry to send to that sever
+	//initialized to leader last log index + 1
 
-	matchIndex		[]int				//for each server,index of highest log entry known to be replicated on server
+	matchIndex []int //for each server,index of highest log entry known to be replicated on server
 
-	expiredAppendTimes	[]time.Time		//After appended the log entry to all server,
-										//When a server does not reply within the expiredAppendTimes[i] time
-										//and that server time out
+	expiredAppendTimes []time.Time //After appended the log entry to all server,
+	//When a server does not reply within the expiredAppendTimes[i] time
+	//and that server time out
 
-	commitQueue		[]ApplyMsg			//consumer-procuder model,buff for applyMsg
-}	
+	commitQueue []ApplyMsg //consumer-procuder model,buff for applyMsg
+}
 
 // return currentTerm and whether this server
 // believes it is the leader.
@@ -122,16 +118,10 @@ func (rf *Raft) GetState() (int, bool) {
 //
 func (rf *Raft) persist() {
 	// Your code here (2C).
-	w := new(bytes.Buffer)
-	e := labgob.NewEncoder(w)
-	e.Encode(rf.currentTerm)
-	e.Encode(rf.voteFor)
-	e.Encode(rf.logs)
-	data := w.Bytes()
+	data := serialization(rf)
 	rf.persister.SaveRaftState(data)
-	LogInfo("[%d] persist, len(logs):[%d], currentTerm:[%d], voteFor:[%d]\n",rf.me,len(rf.logs),rf.currentTerm,rf.voteFor)
+	LogInfo("[%d] persist, len(logs):[%d], currentTerm:[%d], voteFor:[%d]\n", rf.me, len(rf.logs), rf.currentTerm, rf.voteFor)
 }
-
 
 //
 // restore previously persisted state.
@@ -143,42 +133,20 @@ func (rf *Raft) readPersist(data []byte) {
 	// Your code here (2C).
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
-	var term	int
+	var term int
 	var voteFor int
-	var logs	[]LogEntry
+	var logs []LogEntry
 	if d.Decode(&term) != nil ||
 		d.Decode(&voteFor) != nil ||
-		d.Decode(&logs) != nil{
-		DeBugPrintf("%d readPersist Decode error!\n",rf.me)	
+		d.Decode(&logs) != nil {
+		DeBugPrintf("%d readPersist Decode error!\n", rf.me)
 	} else {
-	  rf.currentTerm = term
-	  rf.logs = logs
-	  rf.voteFor = voteFor
-	  LogInfo("[%d] readPersist, len(logs):[%d], currentTerm:[%d], voteFor:[%d]\n",rf.me,len(rf.logs),rf.currentTerm,rf.voteFor)
+		rf.currentTerm = term
+		rf.logs = logs
+		rf.voteFor = voteFor
+		LogInfo("[%d] readPersist, len(logs):[%d], currentTerm:[%d], voteFor:[%d]\n", rf.me, len(rf.logs), rf.currentTerm, rf.voteFor)
 	}
 }
-
-
-//
-// A service wants to switch to snapshot.  Only do so if Raft hasn't
-// have more recent info since it communicate the snapshot on applyCh.
-//
-func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
-
-	// Your code here (2D).
-
-	return true
-}
-
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
-
-}
-
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -199,28 +167,28 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if rf.killed(){
-		return -1,-1,false
+	if rf.killed() {
+		return -1, -1, false
 	}
 
-	if rf.myState != Leader{
-		return -1,-1,false
-	}else{
-		prevLogIdx,curTerm := rf.logs[len(rf.logs)-1].Index, rf.currentTerm
-		rf.logs = append(rf.logs,LogEntry{
-			Term:		curTerm,
-			Index:		prevLogIdx + 1,
-			Command:	command,
+	if rf.myState != Leader {
+		return -1, -1, false
+	} else {
+		prevLogIdx, curTerm := rf.logs[len(rf.logs)-1].Index, rf.currentTerm
+		rf.logs = append(rf.logs, LogEntry{
+			Term:    curTerm,
+			Index:   prevLogIdx + 1,
+			Command: command,
 		})
 		rf.persist()
 
-		for i := 0; i < len(rf.peers); i++{
-			if i != rf.me{
-				rf.resetAppendTimer(i,true)
+		for i := 0; i < len(rf.peers); i++ {
+			if i != rf.me {
+				rf.resetAppendTimer(i, true)
 			}
 		}
 
-		return prevLogIdx+1, curTerm, true
+		return prevLogIdx + 1, curTerm, true
 	}
 }
 
@@ -245,38 +213,38 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) changeState(ideal_state RaftState,newTerm int, voteFor int){
-	if ideal_state == Candicate{
+func (rf *Raft) changeState(ideal_state RaftState, newTerm int, voteFor int) {
+	if ideal_state == Candicate {
 		rf.currentTerm += 1
 		rf.voteFor = rf.me
 		rf.myState = Candicate
 		rf.poll = 1
 		rf.persist()
-		LogInfo("[%s] %d -> Candicate Term:%d\n",TimeInfo(),rf.me,rf.currentTerm)
-	}else if ideal_state == Leader{
+		LogInfo("[%s] %d -> Candicate Term:%d\n", TimeInfo(), rf.me, rf.currentTerm)
+	} else if ideal_state == Leader {
 		rf.myState = Leader
-		for i := 0; i < len(rf.peers) ;i++{
-			if i != rf.me{
+		for i := 0; i < len(rf.peers); i++ {
+			if i != rf.me {
 				rf.nextIndex[i] = rf.logs[len(rf.logs)-1].Index + 1
 			}
 		}
 		rf.poll = 0
-		LogInfo("[%s] %d -> Leader Term:%d \n",TimeInfo(),rf.me,rf.currentTerm)
-	}else if ideal_state == Follower{
+		StateInfo("%d -> Leader Term:%d \n", rf.me, rf.currentTerm)
+	} else if ideal_state == Follower {
 		rf.myState = Follower
 		rf.currentTerm = newTerm
 		rf.voteFor = voteFor
 		rf.poll = 0
 		rf.persist()
-		LogInfo("[%s] %d -> Follower Term:%d\n",TimeInfo(),rf.me,rf.currentTerm)
+		LogInfo("[%s] %d -> Follower Term:%d\n", TimeInfo(), rf.me, rf.currentTerm)
 	}
 }
 
-func (rf *Raft) getTermByAbsoluteIndex(index int) int{
+func (rf *Raft) getTermByAbsoluteIndex(index int) int {
 	return rf.logs[rf.getIndexByAbsoluteIndex(index)].Term
 }
 
-func (rf *Raft) getIndexByAbsoluteIndex(index int) int{
+func (rf *Raft) getIndexByAbsoluteIndex(index int) int {
 	//DeBugPrintf("Absoluate Index:%d Relaitve Index:%d\n",index,index - rf.logs[0].Index)
 	return index - rf.logs[0].Index
 }
@@ -307,45 +275,45 @@ func (rf *Raft) ticker() {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 
-		// Your initialization code here (2A, 2B, 2C).
-		serversCount := len(peers)
-	
-		rf := &Raft{
-			peers: 					peers,
-			persister:				persister,
-			me:						me,
-			currentTerm: 			0,
-			voteFor:				-1,
-			logs:					make([]LogEntry,0),
-			myState:				Follower,
-			nextIndex:				make([]int,serversCount),
-			expiredAppendTimes:		make([]time.Time,serversCount),
-			matchIndex:				make([]int,serversCount),
-			commitQueue:			make([]ApplyMsg,0),
-			
-		}
-		rf.cv = sync.NewCond(&rf.mu)
-		rf.logs = append(rf.logs,LogEntry{
-			Index:		0,
-			Term:		0,
-			Command: 	nil,
-		})
-	
-		rf.resetElectionTimer()
-		for i := 0; i < serversCount; i++{
-			rf.resetAppendTimer(i,false)
-		}
-	
-		rf.commitIndex = rf.logs[0].Index
-		DeBugPrintf("Have %d servers\n",serversCount)
-		// initialize from state persisted before a crash
-		rf.readPersist(persister.ReadRaftState())
-	
-	
-		go rf.leaderElectionTicker()
-		go rf.appendEntriesTricker()
-		
-		go rf.applyTicker(applyCh)
-	
-		return rf
+	// Your initialization code here (2A, 2B, 2C).
+	serversCount := len(peers)
+
+	rf := &Raft{
+		peers:              peers,
+		persister:          persister,
+		me:                 me,
+		currentTerm:        0,
+		voteFor:            -1,
+		logs:               make([]LogEntry, 0),
+		myState:            Follower,
+		nextIndex:          make([]int, serversCount),
+		expiredAppendTimes: make([]time.Time, serversCount),
+		matchIndex:         make([]int, serversCount),
+		commitQueue:        make([]ApplyMsg, 0),
+	}
+	rf.cv = sync.NewCond(&rf.mu)
+	rf.logs = append(rf.logs, LogEntry{
+		Index:   0,
+		Term:    0,
+		Command: nil,
+	})
+
+	rf.resetElectionTimer()
+	for i := 0; i < serversCount; i++ {
+		rf.resetAppendTimer(i, false)
+	}
+
+	// initialize from state persisted before a crash
+	rf.readPersist(persister.ReadRaftState())
+
+	//2D bug
+	//commitIndex must init after readPersist() !
+	rf.commitIndex = rf.logs[0].Index
+
+	go rf.leaderElectionTicker()
+	go rf.appendEntriesTricker()
+
+	go rf.applyTicker(applyCh)
+
+	return rf
 }
