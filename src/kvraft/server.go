@@ -1,12 +1,14 @@
 package kvraft
 
 import (
-	"6.824/labgob"
-	"6.824/labrpc"
-	"6.824/raft"
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"6.824/labgob"
+	"6.824/labrpc"
+	"6.824/raft"
 )
 
 const Debug = false
@@ -18,11 +20,30 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+const TIME_OUT = 100
+
+const (
+	CGet    = "Get"
+	CPut    = "Put"
+	CAppend = "Append"
+)
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Command string
+	Key     string
+	Value   string
+	ClerkId int64
+	CmdSeq  int64
+	ReqId   int64
+}
+
+type OpResult struct {
+	Err    Err
+	Result string
+	CmdSeq int64
 }
 
 type KVServer struct {
@@ -35,15 +56,114 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-}
+	data       map[string]string
+	Req2Result map[int64]chan OpResult
 
+	//just save the latest result
+	clerkLatestSeq map[int64]int64
+	clerkLatestRes map[int64]OpResult
+}
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+
+	//If it is a duplicate log,
+	//return it immediately to avoid too many duplicate logs in the raft layer
+
+	clerk := args.Clerk
+
+	kv.mu.Lock()
+	if latestSeq, ok := kv.clerkLatestSeq[clerk]; ok {
+		if latestSeq == args.CmdSeq {
+			reply.Err = kv.clerkLatestRes[clerk].Err
+			reply.Value = kv.clerkLatestRes[clerk].Result
+			kv.mu.Unlock()
+			return
+		} else if latestSeq > args.CmdSeq {
+			kv.mu.Unlock()
+			return
+		}
+	}
+	kv.mu.Unlock()
+
+	command := Op{
+		Command: CGet,
+		Key:     args.Key,
+		ClerkId: args.Clerk,
+		CmdSeq:  args.CmdSeq,
+		ReqId:   nrand(),
+	}
+
+	if _, _, isleader := kv.rf.Start(command); isleader {
+		clerkResChan := make(chan OpResult, 1)
+		kv.mu.Lock()
+		kv.Req2Result[command.ReqId] = clerkResChan
+		kv.mu.Unlock()
+		//LogInfo("[%d] think is a leader!\n", kv.me)
+		select {
+		case opResult := <-clerkResChan:
+			reply.Err = opResult.Err
+			reply.Value = opResult.Result
+		case <-time.After(TIME_OUT * time.Millisecond):
+			//time out
+			reply.Err = ErrTimeOut
+		}
+		kv.mu.Lock()
+		delete(kv.Req2Result, command.ReqId)
+		kv.mu.Unlock()
+	} else {
+		reply.Err = ErrWrongLeader
+	}
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+
+	//If it is a duplicate log,
+	//return it immediately to avoid too many duplicate logs in the raft layer
+	clerk := args.Clerk
+
+	kv.mu.Lock()
+	if latestSeq, ok := kv.clerkLatestSeq[clerk]; ok {
+		if latestSeq == args.CmdSeq {
+			reply.Err = kv.clerkLatestRes[clerk].Err
+			kv.mu.Unlock()
+			return
+		} else if latestSeq > args.CmdSeq {
+			kv.mu.Unlock()
+			return
+		}
+	}
+	kv.mu.Unlock()
+
+	command := Op{
+		Command: args.Op,
+		Key:     args.Key,
+		Value:   args.Value,
+		ClerkId: args.Clerk,
+		CmdSeq:  args.CmdSeq,
+		ReqId:   nrand(),
+	}
+
+	if _, _, isleader := kv.rf.Start(command); isleader {
+		clerkResChan := make(chan OpResult, 1)
+		kv.mu.Lock()
+		kv.Req2Result[command.ReqId] = clerkResChan
+		kv.mu.Unlock()
+		//LogInfo("[%d] think is a leader!\n", kv.me)
+		select {
+		case opResult := <-clerkResChan:
+			reply.Err = opResult.Err
+		case <-time.After(TIME_OUT * time.Millisecond):
+			//time out
+			reply.Err = ErrTimeOut
+		}
+		kv.mu.Lock()
+		delete(kv.Req2Result, command.ReqId)
+		kv.mu.Unlock()
+	} else {
+		reply.Err = ErrWrongLeader
+	}
 }
 
 //
@@ -65,6 +185,82 @@ func (kv *KVServer) Kill() {
 func (kv *KVServer) killed() bool {
 	z := atomic.LoadInt32(&kv.dead)
 	return z == 1
+}
+
+func (kv *KVServer) update(clerk int64, latestSeq int64, latestRes OpResult) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	kv.clerkLatestSeq[clerk] = latestSeq
+	kv.clerkLatestRes[clerk] = latestRes
+}
+
+func (kv *KVServer) applyRes2Chan(reqId int64, result OpResult) {
+	kv.mu.Lock()
+	reqChan, ok := kv.Req2Result[reqId]
+	kv.mu.Unlock()
+	if ok {
+		reqChan <- result
+	}
+}
+
+// check whether need to process
+func (kv *KVServer) check_dup(op Op) (bool, OpResult) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	client_last_process_seq, ok := kv.clerkLatestSeq[op.ClerkId]
+	if ok {
+		if op.CmdSeq <= client_last_process_seq {
+			// need not to process
+			return false, kv.clerkLatestRes[op.ClerkId]
+		}
+	}
+	// need to process
+	return true, OpResult{}
+}
+
+func (kv *KVServer) run() {
+	//for !kv.killed() {
+	for perCommand := range kv.applyCh {
+		//check command is valid or not
+		if perCommand.CommandValid {
+			op := perCommand.Command.(Op)
+			//check command repeate or not
+			need_process, res := kv.check_dup(op)
+			if !need_process {
+				kv.applyRes2Chan(op.ReqId, res)
+				continue
+			}
+			result := OpResult{
+				CmdSeq: op.CmdSeq,
+				Err:    OK,
+				Result: "",
+			}
+			switch op.Command {
+			case CGet:
+				if val, ok := kv.data[op.Key]; ok {
+					result.Result = val
+				} else {
+					result.Result = ""
+					result.Err = ErrNoKey
+				}
+				kv.update(op.ClerkId, op.CmdSeq, result)
+			case CPut:
+				kv.data[op.Key] = op.Value
+				kv.update(op.ClerkId, op.CmdSeq, result)
+			case CAppend:
+				if val, ok := kv.data[op.Key]; ok {
+					kv.data[op.Key] = val + op.Value
+				} else {
+					kv.data[op.Key] = op.Value
+				}
+				kv.update(op.ClerkId, op.CmdSeq, result)
+			}
+			kv.applyRes2Chan(op.ReqId, result)
+		}
+	}
+	//}
+
 }
 
 //
@@ -94,8 +290,13 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.data = make(map[string]string)
+	kv.Req2Result = make(map[int64]chan OpResult)
+	kv.clerkLatestRes = make(map[int64]OpResult)
+	kv.clerkLatestSeq = make(map[int64]int64)
 
 	// You may need initialization code here.
+	go kv.run()
 
 	return kv
 }
