@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -47,21 +48,58 @@ type OpResult struct {
 }
 
 type KVServer struct {
-	mu      sync.Mutex
-	me      int
-	rf      *raft.Raft
+	mu sync.Mutex
+	me int
+	rf *raft.Raft
+	//persister *Persister
 	applyCh chan raft.ApplyMsg
 	dead    int32 // set by Kill()
 
 	maxraftstate int // snapshot if log grows this big
-
+	persister    *raft.Persister
 	// Your definitions here.
-	data       map[string]string
 	Req2Result map[int64]chan OpResult
-
+	data       map[string]string /*need to save as sanpshot*/
 	//just save the latest result
-	clerkLatestSeq map[int64]int64
-	clerkLatestRes map[int64]OpResult
+	clerkLatestSeq map[int64]int64    /*need to save as sanpshot*/
+	clerkLatestRes map[int64]OpResult /*need to save as sanpshot*/
+
+}
+
+func (kv *KVServer) serilizeState() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	kv.mu.Lock()
+	e.Encode(kv.data)
+	e.Encode(kv.clerkLatestSeq)
+	e.Encode(kv.clerkLatestRes)
+	kv.mu.Unlock()
+	return w.Bytes()
+}
+
+func (kv *KVServer) deserilizeState(snapShot []byte) {
+	if snapShot == nil || len(snapShot) < 1 {
+		return
+	}
+
+	r := bytes.NewBuffer(snapShot)
+	d := labgob.NewDecoder(r)
+
+	var snapData map[string]string
+	var snapLatestSeq map[int64]int64
+	var snapLatestRes map[int64]OpResult
+
+	if d.Decode(&snapData) != nil ||
+		d.Decode(&snapLatestSeq) != nil ||
+		d.Decode(&snapLatestRes) != nil {
+		//sth wrong
+	} else {
+		kv.mu.Lock()
+		kv.data = snapData
+		kv.clerkLatestRes = snapLatestRes
+		kv.clerkLatestSeq = snapLatestSeq
+		kv.mu.Unlock()
+	}
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -256,7 +294,15 @@ func (kv *KVServer) run() {
 				}
 				kv.update(op.ClerkId, op.CmdSeq, result)
 			}
+			if kv.maxraftstate != -1 && kv.maxraftstate <= kv.persister.RaftStateSize() {
+				//need to save sanpshot
+				curSanpShot := kv.serilizeState()
+				go kv.rf.Snapshot(perCommand.CommandIndex, curSanpShot)
+			}
 			kv.applyRes2Chan(op.ReqId, result)
+		} else if perCommand.SnapshotValid {
+			//it is a snapshot command
+			kv.deserilizeState(perCommand.Snapshot)
 		}
 	}
 	//}
@@ -294,7 +340,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.Req2Result = make(map[int64]chan OpResult)
 	kv.clerkLatestRes = make(map[int64]OpResult)
 	kv.clerkLatestSeq = make(map[int64]int64)
-
+	kv.persister = persister
+	kv.deserilizeState(persister.ReadSnapshot())
 	// You may need initialization code here.
 	go kv.run()
 

@@ -191,7 +191,10 @@ func (rf *Raft) AppendEntries(args *appendArgs, reply *appendReply) {
 
 	//check the log version
 	curLastLogIndex := rf.logs[len(rf.logs)-1].Index
-	if curLastLogIndex < args.PrevLogIndex || rf.getTermByAbsoluteIndex(args.PrevLogIndex) != args.PrevLogTerm {
+	if args.PrevLogIndex < rf.logs[0].Index {
+		//3B bug
+		//must check args.PrevLogIndex is valid or not
+	} else if curLastLogIndex < args.PrevLogIndex || rf.getTermByAbsoluteIndex(args.PrevLogIndex) != args.PrevLogTerm {
 		//my logs doesn't contain an entry at prevlogindex
 		reply.Success = false
 		reply.Term = args.Term
@@ -240,31 +243,31 @@ func (rf *Raft) AppendEntries(args *appendArgs, reply *appendReply) {
 			//[confictIdx,len(args.Entries)) not match
 			rf.logs = rf.logs[0:confictAbsIdx]
 			rf.logs = append(rf.logs, args.Entries[confictIdx-args.PrevLogIndex-1:]...)
+			rf.persist()
 		}
-		rf.persist()
 
-		LogInfo("leader's curLog:\n")
-		for i := 0; i <= len(args.Entries); i++ {
-			if (i != 0 && i%5 == 0) || i == len(args.Entries) {
-				NoTimeLogInfo("\n")
-			}
+		// LogInfo("leader's curLog:\n")
+		// for i := 0; i <= len(args.Entries); i++ {
+		// 	if (i != 0 && i%5 == 0) || i == len(args.Entries) {
+		// 		NoTimeLogInfo("\n")
+		// 	}
 
-			if i != len(args.Entries) {
-				NoTimeLogInfo("{idx: %d,term: %d},", args.Entries[i].Index, args.Entries[i].Term)
-			}
+		// 	if i != len(args.Entries) {
+		// 		NoTimeLogInfo("{idx: %d,term: %d},", args.Entries[i].Index, args.Entries[i].Term)
+		// 	}
 
-		}
-		NoTimeLogInfo("confict idx: %d, abs: %d\n", confictIdx, rf.getIndexByAbsoluteIndex(confictIdx))
+		// }
+		// NoTimeLogInfo("confict idx: %d, abs: %d\n", confictIdx, rf.getIndexByAbsoluteIndex(confictIdx))
 
-		LogInfo("%d 's curLog:\n", rf.me)
-		for i := 0; i <= len(rf.logs); i++ {
-			if (i != 0 && i%5 == 0) || i == len(rf.logs) {
-				NoTimeLogInfo("\n")
-			}
-			if i != len(rf.logs) {
-				NoTimeLogInfo("{idx: %d,term: %d},", rf.logs[i].Index, rf.logs[i].Term)
-			}
-		}
+		// LogInfo("%d 's curLog:\n", rf.me)
+		// for i := 0; i <= len(rf.logs); i++ {
+		// 	if (i != 0 && i%5 == 0) || i == len(rf.logs) {
+		// 		NoTimeLogInfo("\n")
+		// 	}
+		// 	if i != len(rf.logs) {
+		// 		NoTimeLogInfo("{idx: %d,term: %d},", rf.logs[i].Index, rf.logs[i].Term)
+		// 	}
+		// }
 
 		//check leader's commit idx and update mine
 		commitIdxBak := rf.commitIndex

@@ -139,7 +139,16 @@ func (rf *Raft) InstallSnapshot(args *SnapShotArgs, reply *SnapShotReply) {
 				rf.commitIndex = args.LastIncludedIndex
 			} else {
 				SnapInfo("[%d] oldCommitIndex:[%d],new not change\n", rf.me, rf.commitIndex)
-				//do nothing
+				//3b Bug
+				// if there is some entry between lastIncludeEntry and origin commitIndex
+				// need to recommit them
+				for i := args.LastIncludedIndex + 1; i <= rf.commitIndex; i++ {
+					rf.commitQueue = append(rf.commitQueue, ApplyMsg{
+						CommandValid: true,
+						CommandIndex: i,
+						Command:      rf.logs[rf.getIndexByAbsoluteIndex(i)].Command,
+					})
+				}
 			}
 		}
 		data := serialization(rf)
