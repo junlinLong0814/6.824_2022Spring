@@ -1,17 +1,20 @@
 package raft
 
-import "time"
-import "math/rand"
+import (
+	"math/rand"
+	"time"
+)
+
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	CandicatedTerm		int
-	CandicateId			int
-	LastLogIndex		int
-	LastLogTerm			int 
+	CandicatedTerm int
+	CandicateId    int
+	LastLogIndex   int
+	LastLogTerm    int
 }
 
 //
@@ -20,92 +23,97 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
-	UpdateTerm			int
-	VoteGranted			bool
+	UpdateTerm  int
+	VoteGranted bool
 }
 
-func (rf *Raft) leaderElectionTicker(){
+func (rf *Raft) leaderElectionTicker() {
 	ticker := time.NewTicker(time.Millisecond * ELECTION_CHECK_TIME)
 
-	for range ticker.C{
+	for range ticker.C {
 		rf.mu.Lock()
 		if !rf.killed() {
 			//haven't heard from leader, start the election
 			if (time.Now().After(rf.expiredElectionTime)) &&
-				(rf.myState == Follower || rf.myState == Candicate){
+				(rf.myState == Follower || rf.myState == Candicate) {
 				//I become a candicate and reset timer to start a election
-				rf.changeState(Candicate,-1,-1)
+				rf.changeState(Candicate, -1, -1)
 				rf.resetElectionTimer()
 				//request for vote
-				VoteInfo("[%s] %d start a election!\n",TimeInfo(),rf.me)
-				for other,_ := range rf.peers{
-					if other == rf.me{
+				VoteInfo("[%s] %d start a election!\n", TimeInfo(), rf.me)
+				for other, _ := range rf.peers {
+					if other == rf.me {
 						continue
 					}
-					go rf.callForVote(other, rf.currentTerm, rf.me,rf.logs[len(rf.logs)-1].Index,rf.logs[len(rf.logs)-1].Term)
+					go rf.callForVote(other, rf.currentTerm, rf.me, rf.logs[len(rf.logs)-1].Index, rf.logs[len(rf.logs)-1].Term)
 				}
-				if rf.myState != Leader{
-					VoteInfo("[%s] %d got %d vote!\n",TimeInfo(),rf.me, rf.poll)
+				if rf.myState != Leader {
+					VoteInfo("[%s] %d got %d vote!\n", TimeInfo(), rf.me, rf.poll)
 				}
 			}
 			rf.mu.Unlock()
-		}else {
+		} else {
 			rf.mu.Unlock()
+			break
 		}
 	}
 	ticker.Stop()
 }
 
-func (rf *Raft) callForVote(other,currentTerm,me,index,term int){
-	args, reply := RequestVoteArgs{},RequestVoteReply{}
+func (rf *Raft) callForVote(other, currentTerm, me, index, term int) {
+	args, reply := RequestVoteArgs{}, RequestVoteReply{}
 
 	args.CandicatedTerm = currentTerm
 	args.CandicateId = me
 	args.LastLogIndex = index
 	args.LastLogTerm = term
 
-	ok := rf.sendRequestVote(other,&args,&reply)
+	ok := rf.sendRequestVote(other, &args, &reply)
 	if ok {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
 
+		if rf.currentTerm > reply.UpdateTerm {
+			return
+		}
+
 		//check the reply info
-		if reply.UpdateTerm > rf.currentTerm{
+		if reply.UpdateTerm > rf.currentTerm {
 			//there are other newer candicate
 			//update my term and change to be a follower
-			rf.changeState(Follower,reply.UpdateTerm,-1)
+			rf.changeState(Follower, reply.UpdateTerm, -1)
 			rf.resetElectionTimer()
-			return 
+			return
 		}
 
-		//check my current state  
-		if rf.myState != Candicate{
+		//check my current state
+		if rf.myState != Candicate {
 			//now i am a follower or leader
 			//should ignore this reply; do nothing
-			return 
+			return
 		}
 
-		if args.CandicatedTerm != reply.UpdateTerm{
+		if args.CandicatedTerm != reply.UpdateTerm {
 			/*
-			1.reply.UpdateTerm < args.CandicatedTerm : 
-				this vote is a vote on previous election, so ignore it
-			2.reply.UpdateTerm > args.CandicatedTerm && reply.UpdateTerm <= rf.currentTerm :
-				impossible situation
+				1.reply.UpdateTerm < args.CandicatedTerm :
+					this vote is a vote on previous election, so ignore it
+				2.reply.UpdateTerm > args.CandicatedTerm && reply.UpdateTerm <= rf.currentTerm :
+					impossible situation
 			*/
-			return 
+			return
 		}
 
-		if reply.VoteGranted{
-			//got a vote from others 
+		if reply.VoteGranted {
+			//got a vote from others
 			rf.poll += 1
-			if rf.poll > len(rf.peers)/2{
-				VoteInfo("[%s] %d got %d vote!\n",TimeInfo(),rf.me, rf.poll)
-				rf.changeState(Leader,-1,-1)
+			if rf.poll > len(rf.peers)/2 {
+				VoteInfo("[%s] %d got %d vote!\n", TimeInfo(), rf.me, rf.poll)
+				rf.changeState(Leader, -1, -1)
 
 				//when win the election, send entry immediately
-				for i:= 0; i < len(rf.peers); i++{
-					if i != rf.me{
-						rf.resetAppendTimer(i,true)
+				for i := 0; i < len(rf.peers); i++ {
+					if i != rf.me {
+						rf.resetAppendTimer(i, true)
 					}
 				}
 			}
@@ -123,39 +131,40 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	lastLogApplied,lastLogTerm := rf.logs[len(rf.logs)-1].Index, rf.logs[len(rf.logs)-1].Term
+	lastLogApplied, lastLogTerm := rf.logs[len(rf.logs)-1].Index, rf.logs[len(rf.logs)-1].Term
 
-	if args.CandicatedTerm < rf.currentTerm{
+	if args.CandicatedTerm < rf.currentTerm {
 		//candicate's term less than my term
 		reply.UpdateTerm = rf.currentTerm
 		reply.VoteGranted = false
-	}else if args.CandicatedTerm == rf.currentTerm{
+	} else if args.CandicatedTerm == rf.currentTerm {
 		reply.UpdateTerm = rf.currentTerm
 		//candicate's term is equal to my term
 		//situation : at the same time campaign
 
 		//compare log's attribute and check votefor
-		if (rf.voteFor == -1 || rf.voteFor == args.CandicateId) && 
-			( (args.LastLogTerm > lastLogTerm) || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogApplied)){
-				//candicate's log must newer than mine 
-				reply.VoteGranted = true
-				//reset the election timer
-				rf.resetElectionTimer()
-		}else {
-				reply.VoteGranted = false
+		if (rf.voteFor == -1 || rf.voteFor == args.CandicateId) &&
+			((args.LastLogTerm > lastLogTerm) || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogApplied)) {
+			//candicate's log must newer than mine
+			reply.VoteGranted = true
+			rf.changeState(Follower, args.CandicatedTerm, args.CandicateId)
+			//reset the election timer
+			rf.resetElectionTimer()
+		} else {
+			reply.VoteGranted = false
 		}
-	}else {
+	} else {
 		//candicate's term newer than mine
 		//I shoule update my term and change mystate to follower
 		reply.UpdateTerm = args.CandicatedTerm
 
 		//voting for candicate depends on the log's version
-		if (args.LastLogTerm > lastLogTerm) || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogApplied){
+		if (args.LastLogTerm > lastLogTerm) || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogApplied) {
 			reply.VoteGranted = true
 			rf.changeState(Follower, args.CandicatedTerm, args.CandicateId)
-		}else {
+		} else {
 			reply.VoteGranted = false
-			rf.changeState(Follower,args.CandicatedTerm, -1)
+			rf.changeState(Follower, args.CandicatedTerm, -1)
 		}
 		//reset the election timer
 		rf.resetElectionTimer()
@@ -196,13 +205,9 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
-
-
 //got a random timeout range [200ms ~ 400ms]
-func (rf *Raft) resetElectionTimer(){
+func (rf *Raft) resetElectionTimer() {
 	t := rand.Int31n(200)
 	rf.expiredElectionTime = time.Now().Add(time.Duration(t+200) * time.Millisecond)
-	VoteInfo("[%s] %d out time [%s]\n",TimeInfo(),rf.me,rf.expiredElectionTime.Format("2006-01-02 15:04:05.000"))
+	VoteInfo("[%s] %d out time [%s]\n", TimeInfo(), rf.me, rf.expiredElectionTime.Format("2006-01-02 15:04:05.000"))
 }
-
-

@@ -107,7 +107,7 @@ func (rf *Raft) GetState() (int, bool) {
 
 	term = rf.currentTerm
 	isleader = (rf.myState == Leader)
-
+	StateInfo("---------------[%d] thinks he is a Leader [%t]!--------------\n", rf.me, isleader)
 	return term, isleader
 }
 
@@ -183,9 +183,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.persist()
 
 		for i := 0; i < len(rf.peers); i++ {
-			if i != rf.me {
-				rf.resetAppendTimer(i, true)
-			}
+			rf.resetAppendTimer(i, true)
 		}
 
 		return prevLogIdx + 1, curTerm, true
@@ -229,7 +227,7 @@ func (rf *Raft) changeState(ideal_state RaftState, newTerm int, voteFor int) {
 			}
 		}
 		rf.poll = 0
-		StateInfo("%d -> Leader Term:%d \n", rf.me, rf.currentTerm)
+		StateInfo("--------[%d] -> Leader Term:%d ----------\n", rf.me, rf.currentTerm)
 	} else if ideal_state == Follower {
 		rf.myState = Follower
 		rf.currentTerm = newTerm
@@ -277,7 +275,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (2A, 2B, 2C).
 	serversCount := len(peers)
-
+	StateInfo("[%d] server!\n", serversCount)
 	rf := &Raft{
 		peers:              peers,
 		persister:          persister,
