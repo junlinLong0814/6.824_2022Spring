@@ -132,11 +132,12 @@ func (kv *ShardKV) sendPushShard(shardid int, curServers []string, curConfigNum 
 					kv.gid, curConfigNum, kv.currentCfg.Num, shardid, kv.shards[shardid].State)
 				kv.mu.Unlock()
 
+				//if push shard done, set status to GCable
 				if valid {
 					op := Op{
 						Type:           CHANGE_SHARD,
 						ShardId:        shardid,
-						NewStatus:      Working,
+						NewStatus:      GCable,
 						ShardConfigNum: curConfigNum,
 					}
 					kv.rf.Start(op)
@@ -178,7 +179,6 @@ func (kv *ShardKV) GetShards(args *PushShardArgs, reply *PushShardReply) {
 		reply.ConfigNum = args.ConfigNum
 		reply.Err = OK
 
-		//should append a log{change shard's state -> GCalbe} to raft level
 		op := Op{
 			Type:           CHANGE_SHARD,
 			ShardId:        args.ShardId,
@@ -187,7 +187,6 @@ func (kv *ShardKV) GetShards(args *PushShardArgs, reply *PushShardReply) {
 			NewShard:       args.ShardData,
 		}
 		kv.rf.Start(op)
-		//LogInfo("gid:%d, args.Config:%d,my.Config:%d, [%d]shard's now state:%d,valid:%t,reply[%s]\n", kv.gid, args.ConfigNum, kv.currentCfg.Num, args.ShardId, kv.shards[args.ShardId].State, valid, reply.Err)
 	} else {
 		//sth wrong
 		//TODO
@@ -201,22 +200,23 @@ func (kv *ShardKV) changeShardState(op Op) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	//Pulling -> Working
+	//BePulling-> GCable (recover garbage)-> Working
+
 	if op.ShardConfigNum != kv.currentCfg.Num {
 		return
 	}
 	if op.NewStatus == Working {
-		if _, ok := kv.rf.GetState(); ok {
-			LogInfo("gid:[%d], [%d]shard %d->%d\n", kv.gid, op.ShardId, kv.shards[op.ShardId].State, Working)
-		}
-
 		if kv.shards[op.ShardId].State == Pulling {
 			kv.shards[op.ShardId] = op.NewShard.Copy()
 			kv.shards[op.ShardId].State = Working
-		} else if kv.shards[op.ShardId].State == BePulling {
-			kv.shards[op.ShardId] = shard{}
+		}
+	} else if op.NewStatus == GCable {
+		if kv.shards[op.ShardId].State == BePulling {
+			kv.shards[op.ShardId].ClerkLatestRes = nil
+			kv.shards[op.ShardId].ClerkLatestSeq = nil
+			kv.shards[op.ShardId].Data = nil
 			kv.shards[op.ShardId].State = Working
 		}
-		return
 	}
-
 }
