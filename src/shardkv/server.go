@@ -1,17 +1,48 @@
 package shardkv
 
+import (
+	"sync"
 
-import "6.824/labrpc"
-import "6.824/raft"
-import "sync"
-import "6.824/labgob"
+	"6.824/labgob"
+	"6.824/labrpc"
+	"6.824/raft"
+	"6.824/shardctrler"
+)
 
-
+const (
+	PUT           = "Put"
+	APPEND        = "Append"
+	GET           = "Get"
+	UPDATE_CONFIG = "UpdateConfig"
+	CHANGE_SHARD  = "ChangeShard"
+	TIME_OUT      = 100
+)
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+
+	//for group member process client get/put/append command
+	Type    string
+	Key     string
+	Value   string
+	ReqId   int64
+	ClerkId int64
+	CmdSeq  int64
+
+	//for group member sync latest configs
+	NewConfig shardctrler.Config
+	//for group member change shards status in current config
+	NewShard       shard
+	NewStatus      shardStatus
+	ShardId        int
+	ShardConfigNum int
+}
+
+type OpResult struct {
+	Error  Err
+	Result string
 }
 
 type ShardKV struct {
@@ -25,15 +56,24 @@ type ShardKV struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-}
 
+	//need to save in snapshot
+	currentCfg shardctrler.Config //current config in my group,need to
+	prevCfg    shardctrler.Config //prev config(current config.num - 1) in my group
+	shards     [shardctrler.NShards]shard
 
-func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
-}
+	//don't need to save in snapshot
+	Req2Result map[int64]chan OpResult //for notifying coroutines which processing client command
+	clk        *shardctrler.Clerk      //for querying the latest config
+	persister  *raft.Persister
 
-func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	/*To Think :
+	 *per shardkv need to save all old config? at least,we shoule save all shards in BePulling state from historical config version ?
+	 *Example: GroupA and GroupB are in (Config.Num == 2),
+	 *then GroupA doesn't persist and crash, it's CurrentConfigNum reset to 0
+	 *A will send Query(1) to the master and master will tell A config[1]'s situation
+	 *So A will let B send config[1]'s shards, if B doesn't have, A will block!
+	 */
 }
 
 //
@@ -47,6 +87,38 @@ func (kv *ShardKV) Kill() {
 	// Your code here, if desired.
 }
 
+func (kv *ShardKV) run() {
+	for perCommand := range kv.applyCh {
+		if perCommand.CommandValid {
+			op := perCommand.Command.(Op)
+			targetShard := key2shard(op.Key)
+			//process get/put/append commands
+			if op.Type == PUT || op.Type == APPEND || op.Type == GET {
+				//check is duplicate or not
+				need_process, res := kv.check_dup(targetShard, op)
+				if !need_process {
+					kv.applyRes2Chan(targetShard, op.ReqId, res)
+				} else {
+					//new client command,process it
+					ret := kv.processClient(targetShard, op)
+					kv.update(targetShard, op, ret)
+					kv.applyRes2Chan(targetShard, op.ReqId, ret)
+				}
+			} else if op.Type == UPDATE_CONFIG {
+				kv.updateConfig(op)
+			} else if op.Type == CHANGE_SHARD {
+				kv.changeShardState(op)
+			}
+			if kv.maxraftstate != -1 && kv.maxraftstate <= kv.persister.RaftStateSize() {
+				//need to save sanpshot
+				curSanpShot := kv.serilizeState()
+				go kv.rf.Snapshot(perCommand.CommandIndex, curSanpShot)
+			}
+		} else if perCommand.SnapshotValid {
+			kv.deserilizeState(perCommand.Snapshot)
+		}
+	}
+}
 
 //
 // servers[] contains the ports of the servers in this group.
@@ -96,6 +168,19 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
+	kv.Req2Result = make(map[int64]chan OpResult)
+
+	kv.clk = shardctrler.MakeClerk(kv.ctrlers)
+	kv.persister = persister
+
+	kv.currentCfg = shardctrler.Config{}
+	kv.prevCfg = shardctrler.Config{}
+
+	kv.deserilizeState(persister.ReadSnapshot())
+
+	go kv.pullLatestConfig()
+	go kv.run()
+	go kv.pushShards()
 
 	return kv
 }

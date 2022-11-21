@@ -14,6 +14,8 @@ const (
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongGroup  = "ErrWrongGroup"
 	ErrWrongLeader = "ErrWrongLeader"
+	ErrTimeOut     = "ErrTimeOut"
+	ErrPulling     = "ErrPulling"
 )
 
 type Err string
@@ -27,6 +29,8 @@ type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	CmdSeq int64
+	Clerk  int64
 }
 
 type PutAppendReply struct {
@@ -36,9 +40,22 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key string
 	// You'll have to add definitions here.
+	CmdSeq int64
+	Clerk  int64
 }
 
 type GetReply struct {
 	Err   Err
 	Value string
+}
+
+type PushShardArgs struct {
+	ConfigNum int
+	ShardId   int
+	ShardData shard
+}
+
+type PushShardReply struct {
+	Err       Err
+	ConfigNum int
 }

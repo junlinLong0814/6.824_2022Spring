@@ -142,6 +142,7 @@ func (rf *Raft) InstallSnapshot(args *SnapShotArgs, reply *SnapShotReply) {
 				//3b Bug
 				// if there is some entry between lastIncludeEntry and origin commitIndex
 				// need to recommit them
+				// it not commit them, the kvserver's latestRes will lose those result
 				for i := args.LastIncludedIndex + 1; i <= rf.commitIndex; i++ {
 					rf.commitQueue = append(rf.commitQueue, ApplyMsg{
 						CommandValid: true,
